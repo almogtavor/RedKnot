@@ -1,0 +1,41 @@
+name: build-redknot-sglang-images
+on:
+  push: {branches: [redknot-serving], paths: ["Dockerfile.redknot", ".github/workflows/build-images.yml"]}
+  workflow_dispatch: {}
+env: {REGISTRY: ghcr.io, OWNER: almogtavor}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: {contents: read, packages: write}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: redknot-sglang, repo: "", on: "true"}
+          - {name: redknot-sglang-off, repo: rednote-machine-learning/RedKnot, on: "false"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {repository: "${{ matrix.repo }}"}
+      - name: Off Dockerfile (pristine sglang baseline)
+        if: matrix.repo != ''
+        run: |
+          cat > Dockerfile.redknot <<'EOF'
+          FROM lmsysorg/sglang:latest
+          RUN chmod -R a+rX /root 2>/dev/null || true
+          ENV HOME=/tmp
+          ENV CARGO_HOME=/tmp/.cargo
+          ENV XDG_CACHE_HOME=/tmp/.cache
+          EOF
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.redknot
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/almogtavor/${{ matrix.name }}:latest
+          provenance: false

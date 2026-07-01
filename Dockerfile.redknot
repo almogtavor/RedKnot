@@ -1,0 +1,63 @@
+# RedKnot SGLang image: a stock SGLang runtime with the almogtavor/RedKnot fork's
+# python tree overlaid via PYTHONPATH. RedKnot registers `--attention-backend
+# redknot` / `redknot_mla` / `segpaged` inside its own sglang source tree
+# (python/sglang/srt/layers/attention/redknot_backend.py) and is launched exactly
+# like stock sglang: `python -m sglang.launch_server ...`.
+#
+# Why overlay (not FROM redknot's own docker/Dockerfile): RedKnot is a FULL sglang
+# source fork (its own python/sglang/, sgl-kernel/, rust/), and its docker/Dockerfile
+# is a ~10GB from-source CUDA-13 / torch-2.11 build. We only need the `redknot`
+# FA-2 backend, which uses the pip `flash_attn` package + stock sglang runtime, so
+# we overlay RedKnot's python/ onto a prebuilt sglang base and set PYTHONPATH -- the
+# same trick RedKnot's own server/start_server_redknot_mla.sh uses
+# (`PYTHONPATH=$REDKNOT_ROOT/python python -m sglang.launch_server`).
+#
+# CAVEAT (version drift): RedKnot tracks a very recent sglang (sgl-kernel 0.4.2,
+# torch 2.11, cuda 13, flashinfer 0.6.11). The overlaid python/ must be ABI-compatible
+# with the base image's compiled sgl_kernel/flashinfer. Pin SGLANG_BASE to a tag that
+# matches; bump it if the `redknot` backend import fails at launch. The `redknot`
+# (fa2) path avoids RedKnot's custom sgl-kernel builds, so a close-enough base works.
+#
+# Serves Qwen/Qwen3-32B (native SGLang support + qwen25 tool-call parser; RedKnot
+# ships a Qwen3-32B head-class profile -- no offline profiling needed. RedKnot does
+# NOT support google/gemma-4-31B-it, hence the qwen32b model).
+ARG SGLANG_BASE=lmsysorg/sglang:latest
+FROM ${SGLANG_BASE}
+
+ARG REDKNOT_REPO=https://github.com/almogtavor/RedKnot.git
+ARG REDKNOT_REF=main
+
+WORKDIR /opt
+RUN git clone --depth 1 --branch ${REDKNOT_REF} ${REDKNOT_REPO} redknot-src
+
+# Overlay RedKnot's sglang source tree ahead of the pip-installed sglang so that
+# `import sglang` resolves to the fork (which carries redknot_backend.py + the
+# --attention-backend redknot registration and server_args).
+ENV REDKNOT_SRC=/opt/redknot-src
+ENV PYTHONPATH=/opt/redknot-src/python
+
+# RedKnot's `redknot` FA-2 backend needs a working flash_attn (the sglang base ships a
+# broken stub). Install the real package; prefer a prebuilt wheel, else source build.
+RUN pip install --no-cache-dir flash_attn --no-build-isolation 2>/dev/null \
+    || pip install --no-cache-dir flash-attn 2>/dev/null || true
+RUN python3 -c "import flash_attn; print('flash_attn', getattr(flash_attn,'__version__','?'))" || \
+    echo "WARN: flash_attn not importable; --redknot-kernel=fa3 may be required"
+# RedKnot's Qwen3-32B head-class profile (global/local/retrieval/dense) that the
+# `redknot` backend loads via --redknot-head-config-path. Baked into the image so
+# the helmfile can reference a stable in-container path.
+ENV REDKNOT_HEAD_CONFIG=/opt/redknot-src/test/srt/redknot/head_class/qwen3-32B_optimal_g15_lf_ret.json
+# REDKNOT_ENABLED is a documentation toggle for the harness; the real on/off is the
+# --attention-backend flag the helmfile appends (redknot vs sglang default).
+ENV REDKNOT_ENABLED=0
+
+# SGLang tries to JIT-compile / cache kernels under $HOME; on OpenShift the pod runs
+# as a random non-root UID, so flashinfer / tvm_ffi stat /root/.cargo/bin and crash.
+# Make /root world-readable and redirect all caches to a writable /tmp path.
+RUN chmod -R a+rX /root 2>/dev/null || true
+ENV HOME=/tmp
+ENV CARGO_HOME=/tmp/.cargo
+ENV XDG_CACHE_HOME=/tmp/.cache
+
+# Default command inherited from the base sglang image (python -m sglang.launch_server).
+# The modelservice chart (redknot/helm/values-sglang.yaml) passes model-path / tp /
+# tool-call-parser / --attention-backend redknot at deploy time.
