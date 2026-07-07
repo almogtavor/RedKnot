@@ -110,6 +110,33 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Splice receipts
+# ──────────────────────────────────────────────────────────────────────────
+# Query-time receipts of what was ACTUALLY spliced (vs what the request asked
+# for), keyed by the request's segment-id plan. The scheduler-side output
+# streamer pops these into meta_info["cached_tokens_details"] so clients get a
+# positive proof of span reuse (or a loud miss) per request. Bounded FIFO.
+from collections import OrderedDict
+
+SPLICE_RECEIPTS: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+_RECEIPT_CAP = 4096
+
+
+def splice_receipt_key(segment_ids) -> str:
+    return ",".join(str(s) for s in segment_ids if s)
+
+
+def record_splice_receipt(key: str, receipt: Dict[str, object]) -> None:
+    SPLICE_RECEIPTS[key] = receipt
+    while len(SPLICE_RECEIPTS) > _RECEIPT_CAP:
+        SPLICE_RECEIPTS.popitem(last=False)
+
+
+def pop_splice_receipt(key: str):
+    return SPLICE_RECEIPTS.pop(key, None)
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Backend
 # ──────────────────────────────────────────────────────────────────────────
 class RedKnotAttnBackend(AttentionBackend):
@@ -233,6 +260,41 @@ class RedKnotAttnBackend(AttentionBackend):
             offline_segments=offline_plan,
             head_config=head_override or self.head_config,
         )
+
+        # Receipt: resolve each QUERY plan's segments against the offline cache
+        # ONCE per prefill and record what will actually be spliced. This is the
+        # positive proof of span reuse (and the loud miss) that reaches clients
+        # via meta_info["cached_tokens_details"] (see output_streamer).
+        if (
+            offline_plan is not None
+            and forward_batch.forward_mode is not None
+            and forward_batch.forward_mode.is_extend()
+        ):
+            for plan in offline_plan:
+                if not plan:
+                    continue
+                if _parse_build_sentinel(plan) is not None:
+                    continue  # build request, not a query
+                sids = [str(s) for s in plan if s]
+                present = [s for s in sids if self.offline_cache.has(s)]
+                missing = [s for s in sids if not self.offline_cache.has(s)]
+                receipt = {
+                    "redknot_requested": len(sids),
+                    "redknot_spliced": len(present),
+                    "redknot_missing": missing,
+                }
+                record_splice_receipt(splice_receipt_key(sids), receipt)
+                if missing:
+                    logger.error(
+                        "RedKnot: %d/%d offline segment(s) MISSING at query time "
+                        "(%s) — those ranges get NO reuse (dense prefill).",
+                        len(missing), len(sids), missing,
+                    )
+                else:
+                    logger.info(
+                        "RedKnot: reusing %d/%d offline span segment(s): %s",
+                        len(present), len(sids), present,
+                    )
 
     def get_cuda_graph_seq_len_fill_value(self):
         return 0
