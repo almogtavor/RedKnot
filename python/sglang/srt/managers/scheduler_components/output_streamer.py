@@ -78,15 +78,38 @@ class SchedulerOutputStreamer:
             if self.enable_hicache_storage():
                 details["storage"] = req.cached_tokens_storage
                 details["storage_backend"] = self._get_storage_backend_type()
+            details.update(self._get_redknot_receipt(req) or {})
             return details
 
         if req.cached_tokens > 0:
-            return {
+            details = {
                 "device": req.cached_tokens,
                 "host": 0,
             }
+            details.update(self._get_redknot_receipt(req) or {})
+            return details
 
-        return None
+        return self._get_redknot_receipt(req)
+
+    def _get_redknot_receipt(self, req: Req) -> Optional[dict]:
+        """RedKnot query receipt: what the backend ACTUALLY spliced vs what the
+        request asked for (positive proof of span reuse). None for non-RedKnot
+        requests and __RKBUILD__ build requests."""
+        plan = getattr(req, "redknot_offline_segments", None)
+        if not plan:
+            return None
+        sids = [str(s) for s in plan if s]
+        if not sids or any(s.startswith("__RKBUILD__:") for s in sids):
+            return None
+        try:
+            from sglang.srt.layers.attention.redknot_backend import (
+                pop_splice_receipt,
+                splice_receipt_key,
+            )
+
+            return pop_splice_receipt(splice_receipt_key(sids))
+        except Exception:
+            return None
 
     def stream_output(
         self,
