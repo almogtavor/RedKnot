@@ -14,6 +14,14 @@ RUN git clone --depth 1 --branch ${REDKNOT_REF} ${REDKNOT_REPO} redknot-src
 RUN cd /opt/redknot-src && pip install --no-cache-dir --no-deps -e "python" && \
     python3 -c "import sglang.srt.layers.attention.redknot_backend; print('redknot backend import OK')"
 
+# DeepSeek-V4-Flash deps (test/srt/redknot/DSV4_FLASH_SETUP_NOTES.md):
+# safetensors>=0.7 understands the checkpoint's F8_E8M0 (ue8m0) scale dtype -
+# older versions misread the FP4-packed expert tensors (w13 shape crash at load).
+# tilelang pin = the MHC/hash kernels. FlashMLA/DeepGEMM: base image wheels are
+# tried first on H100; source-build only if runtime shows the notes' segfault.
+RUN pip install --no-cache-dir "safetensors>=0.7.0" "tilelang==0.1.8" "apache-tvm-ffi==0.1.8.post2" || \
+    pip install --no-cache-dir "safetensors>=0.7.0"
+
 ENV REDKNOT_SRC=/opt/redknot-src
 ENV REDKNOT_HEAD_CONFIG=/opt/redknot-src/test/srt/redknot/head_class/qwen3-32B_optimal_g15_lf_ret.json
 ENV REDKNOT_ENABLED=0
