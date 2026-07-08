@@ -4,7 +4,7 @@
 FROM lmsysorg/sglang:latest
 
 ARG REDKNOT_REPO=https://github.com/almogtavor/RedKnot.git
-ARG REDKNOT_REF=main
+ARG REDKNOT_REF=redknot-serving
 WORKDIR /opt
 RUN git clone --depth 1 --branch ${REDKNOT_REF} ${REDKNOT_REPO} redknot-src
 
