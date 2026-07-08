@@ -943,7 +943,16 @@ class Req(ReqDllmMixin):
         self.bootstrap_host: str = bootstrap_host
         self.bootstrap_port: Optional[int] = bootstrap_port
         self.bootstrap_room: Optional[int] = bootstrap_room
-        self.skip_radix_cache_insert = bootstrap_host == FAKE_BOOTSTRAP_HOST
+        # RedKnot offline-build reqs (__RKBUILD__:<sid>) MUST bypass radix: their KV is
+        # snapshotted at clean positions [0,L); radix prefix-reuse would give them wrong
+        # positions (design doc §risk-table). Query reqs keep radix (non-span prefix reuse).
+        _rk_build = bool(redknot_offline_segments) and any(
+            isinstance(s, str) and s.startswith("__RKBUILD__:")
+            for s in redknot_offline_segments
+        )
+        self.skip_radix_cache_insert = (
+            bootstrap_host == FAKE_BOOTSTRAP_HOST or _rk_build
+        )
         self.disagg_kv_sender: Optional[BaseKVSender] = None
 
         self.routed_dp_rank: Optional[int] = routed_dp_rank
@@ -1078,6 +1087,14 @@ class Req(ReqDllmMixin):
         # Disable prefix caching when embed overrides are present: same token IDs
         # with different override vectors must not share cached KV values.
         if self.positional_embed_overrides is not None:
+            token_ids_to_match = array("q")
+
+        # RedKnot offline-build reqs must snapshot KV at clean positions [0,L): force a
+        # radix prefix MISS (empty match key) so match_prefix returns prefix_len=0. Pairs
+        # with skip_radix_cache_insert (write side). Query reqs are unaffected -> keep radix.
+        if getattr(self, "skip_radix_cache_insert", False) and getattr(
+            self, "redknot_offline_segments", None
+        ):
             token_ids_to_match = array("q")
 
         if tree_cache is not None:
