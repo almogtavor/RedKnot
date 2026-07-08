@@ -95,6 +95,13 @@ class SchedulerOutputStreamer:
         """RedKnot query receipt: what the backend ACTUALLY spliced vs what the
         request asked for (positive proof of span reuse). None for non-RedKnot
         requests and __RKBUILD__ build requests."""
+        # Cached on the Req after the first successful read: stream_output runs
+        # per-chunk, but pop_splice_receipt is destructive -> the first chunk that
+        # pops would consume it and every later chunk (incl. the final one the
+        # client reads) would get None. Cache it so all chunks see the same receipt.
+        cached = getattr(req, "_redknot_receipt_cache", None)
+        if cached is not None:
+            return cached
         plan = getattr(req, "redknot_offline_segments", None)
         if not plan:
             return None
@@ -107,7 +114,10 @@ class SchedulerOutputStreamer:
                 splice_receipt_key,
             )
 
-            return pop_splice_receipt(splice_receipt_key(sids))
+            receipt = pop_splice_receipt(splice_receipt_key(sids))
+            if receipt is not None:
+                req._redknot_receipt_cache = receipt
+            return receipt
         except Exception:
             return None
 
