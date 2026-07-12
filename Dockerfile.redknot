@@ -1,0 +1,32 @@
+# RedKnot SGLang image (ON): stock SGLang runtime + this fork's python/ tree
+# overlaid via PYTHONPATH so `import sglang` resolves to RedKnot (which registers
+# `--attention-backend redknot` in server_args + redknot_backend.py). Launched
+# exactly like stock sglang: `python -m sglang.launch_server ...`.
+#
+# We overlay rather than build RedKnot's ~10GB from-source docker/Dockerfile
+# (CUDA-13 / torch-2.11). The `redknot` FA-2 backend uses the pip `flash_attn`
+# package + stock sglang runtime, so a prebuilt sglang base + PYTHONPATH is enough
+# (the same trick as server/start_server_redknot_mla.sh).
+#
+# Version caveat: the overlaid python/ must be ABI-compatible with the base image's
+# compiled sgl_kernel / flashinfer. Bump SGLANG_BASE if the redknot backend import
+# fails at launch (RedKnot pins sgl-kernel 0.4.2, torch 2.11, flashinfer 0.6.11).
+ARG SGLANG_BASE=lmsysorg/sglang:latest
+FROM ${SGLANG_BASE}
+
+# The fork's contents are the RedKnot source tree.
+COPY . /opt/redknot-src
+
+ENV REDKNOT_SRC=/opt/redknot-src
+ENV PYTHONPATH=/opt/redknot-src/python
+ENV REDKNOT_HEAD_CONFIG=/opt/redknot-src/test/srt/redknot/head_class/qwen3-32B_optimal_g15_lf_ret.json
+ENV REDKNOT_ENABLED=0
+
+# OpenShift random-UID fix: flashinfer / tvm_ffi stat /root/.cargo/bin and crash
+# when the pod runs as a non-root UID. Make /root world-readable + redirect caches.
+RUN chmod -R a+rX /root 2>/dev/null || true
+ENV HOME=/tmp
+ENV CARGO_HOME=/tmp/.cargo
+ENV XDG_CACHE_HOME=/tmp/.cache
+
+# Default command inherited from the sglang base (python -m sglang.launch_server).
